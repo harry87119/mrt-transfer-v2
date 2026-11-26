@@ -635,68 +635,27 @@ a{color:var(--focus)}
     rows.forEach(function(list){list.forEach(function(t){if(!t[2])return;var v={run:t[2],stop:t[3]};R.seg[t[0]+">"+t[1]]=v;if(!R.seg[t[1]+">"+t[0]])R.seg[t[1]+">"+t[0]]=v})});
   }
   // riding seconds from station a to b on `line`: TDX run times plus dwell at stations in between; else 2 min per station
+  // segments TDX lacks, with times the user supplied (station names, seconds door-to-door)
+  var USER_SEG={"廣慈/奉天宮|象山":210};
+  function userSeg(n1,n2){var v=USER_SEG[n1+"|"+n2];return v!=null?v:USER_SEG[n2+"|"+n1]}
+  // riding seconds from station a to b on `line`: TDX run times plus dwell at stations in between;
+  // a segment TDX lacks uses your supplied time, else 2 min. src: tdx / user / est (worst part wins)
   function legSec(line,a,b,h){
-    if(!h)return 0;
+    if(!h)return {sec:0,src:"tdx"};
     var out=null;
     routesOf(line).forEach(function(r){
       var i=idx(r,a),j=idx(r,b);if(i<0||j<0||out)return;
-      var d=i<j?1:-1,sum=0,stops=[];
-      for(var k=i;k!==j;k+=d){var g=R.seg[r.st[k].id+">"+r.st[k+d].id];if(!g)return;sum+=g.run;stops.push(g.stop)}
-      stops.shift();stops.forEach(function(v){sum+=v});out=sum;
+      var d=i<j?1:-1,sum=0,stops=[],src="tdx";
+      for(var k=i;k!==j;k+=d){
+        var g=R.seg[r.st[k].id+">"+r.st[k+d].id];
+        if(g){sum+=g.run;stops.push(g.stop);continue}
+        var u=userSeg(r.st[k].name,r.st[k+d].name);
+        if(u!=null){sum+=u;stops.push(0);if(src==="tdx")src="user"}else{sum+=120;stops.push(0);src="est"}
+      }
+      stops.shift();stops.forEach(function(v){sum+=v});out={sec:sum,src:src};
     });
-    return out!=null?{sec:out,src:"tdx"}:{sec:h*120,src:"est"};
+    return out||{sec:h*120,src:"est"};
   }
-  // TDX Frequency: headway per line, used for the average platform wait when comparing routes
-  R.freq={};
-  async function loadFreq(op){
-    var ck="mrt-freq:"+op,c=lsGet(ck,null),rows;
-    if(c&&c.exp>now())rows=c.rows;
-    else{try{rows=(await preTdx("tdx/Frequency-"+op+".json"))||await api("/v2/Rail/Metro/Frequency/"+op+"?$format=JSON");rows=(rows||[]).map(function(r){return {L:r.LineID,sv:r.ServiceDay||r.ServiceDays||{},h:(r.Headways||[]).map(function(h){return [h.StartTime,h.EndTime,+h.MinHeadwayMins||0,+h.MaxHeadwayMins||0]})}});lsSet(ck,{exp:now()+7*86400e3,rows:rows})}catch(e){rows=[]}}
-    rows.forEach(function(r){if(r.L&&r.h.length)(R.freq[r.L]=R.freq[r.L]||[]).push(r)});
-  }
-  // headway range {min,max} in minutes for `line` right now, or null
-  function headway(line){
-    var sd=serviceDay(),sec=twNow().sec;if(sec<4*3600)sec+=86400;var out=null;
-    (R.freq[line]||[]).forEach(function(r){
-      if(Object.keys(r.sv).length&&!r.sv[DOWKEY[sd.dow]])return;
-      r.h.forEach(function(h){var a=hm(h[0]),b=hm(h[1]);if(a==null||b==null||!h[3])return;if(b<=a)b+=86400;if(sec>=a&&sec<b&&!out)out={min:h[2]||h[3],max:h[3]}});
-    });
-    return out;
-  }
-  function avgWait(line){var h=headway(line);return h?(h.min+h.max)/2*30:AVG_WAIT}
-  // TDX Alert: service disruptions, refreshed at most every 3 minutes
-  R.alerts={};var alertAt=0;
-  async function loadAlerts(ops){
-    if(now()-alertAt<180e3)return;alertAt=now();
-    for(var i=0;i<ops.length;i++){
-      try{
-        var r=await api("/v2/Rail/Metro/Alert/"+ops[i]+"?$format=JSON");
-        var list=Array.isArray(r)?r:(r&&(r.Alerts||r.alerts))||[];
-        R.alerts[ops[i]]=list.map(function(a){
-          var sc=a.Scope||{},ls=[];
-          (sc.Lines||[]).forEach(function(l){if(l.LineID)ls.push(l.LineID)});
-          (sc.Routes||[]).forEach(function(l){if(l.LineID)ls.push(l.LineID)});
-          (sc.Stations||[]).forEach(function(l){var L=l.LineID||lineOf(l.StationID);if(L)ls.push(L)});
-          var t=nm(a.Title&&(a.Title.Zh_tw||a.Title)||""),d=String(a.Description&&(a.Description.Zh_tw||a.Description)||"").trim();
-          return {lines:ls,title:t,desc:d,status:a.Status};
-        }).filter(function(a){return (a.title||a.desc)&&!/正常營運|營運正常/.test(a.title+a.desc)});
-      }catch(e){if(now()<coolUntil)return}
-    }
-  }
-  function alertsFor(lines){
-    var out=[];Object.keys(R.alerts).forEach(function(op){R.alerts[op].forEach(function(a){if(!a.lines.length||a.lines.some(function(L){return lines.indexOf(L)>=0}))out.push(a)})});
-    return out;
-  }
-  // TDX FirstLastTimetable for one station (cached for the day)
-  R.fl={};
-  async function loadFL(line,id){
-    var op=opOf(line),ck="mrt-fl:"+id,c=lsGet(ck,null);
-    if(c&&c.exp>now()){R.fl[id]=c.rows;return}
-    try{var all=await preTdx("fl/"+op+".json"),rows=all?all.filter(function(r){return r.StationID===id}):await api("/v2/Rail/Metro/FirstLastTimetable/"+op+q("StationID eq '"+id+"'"));
-      R.fl[id]=(rows||[]).map(function(r){return {dest:nm(r.DestinationStationName&&r.DestinationStationName.Zh_tw||""),first:r.FirstTrainTime,last:r.LastTrainTime,sv:r.ServiceDay||{}}});
-      lsSet(ck,{exp:now()+12*3600e3,rows:R.fl[id]})}catch(e){if(now()<coolUntil)throw e}
-  }
-  function flFor(id,validDest){return (R.fl[id]||[]).filter(function(r){return r.dest&&validDest(r.dest)})}
   function indexRoutes(){
     R.byName={};var perLine={};
     R.routes.forEach(function(r){
@@ -886,7 +845,7 @@ a{color:var(--focus)}
     // ride-time coverage: adjacent station pairs without TDX S2STravelTime
     var gap={},seen={};
     R.routes.forEach(function(r){for(var k=0;k+1<r.st.length;k++){var x=r.st[k],y=r.st[k+1],key=[x.id,y.id].sort().join("-");if(seen[key])continue;seen[key]=1;
-      if(!R.seg[x.id+">"+y.id]&&!R.seg[y.id+">"+x.id])(gap[r.line]=gap[r.line]||[]).push(x.name+"–"+y.name)}});
+      if(!R.seg[x.id+">"+y.id]&&!R.seg[y.id+">"+x.id]&&userSeg(x.name,y.name)==null)(gap[r.line]=gap[r.line]||[]).push(x.name+"–"+y.name)}});
     var h2=document.createElement("p");h2.className="note";h2.style.marginTop="14px";
     var gl=Object.keys(gap);
     h2.textContent=gl.length?"站間行駛時間：以下路段 TDX 沒有資料，改用每站 2 分鐘預估：":"站間行駛時間：每一段都有 TDX 資料。";box.appendChild(h2);
@@ -961,7 +920,7 @@ a{color:var(--focus)}
     (list||[]).forEach(function(y){if(y.dest!==x.dest||y.at<=x.sched||y.at>x.sched+lg.sec*1700+60e3)return;if(!best||Math.abs(y.at-est)<Math.abs(best.at-est))best=y});
     return {at:(best?best.at:est)+(x.at-x.sched),est:best?"":lg.src};
   }
-  function estNote(e){return e==="tdx"?"（依 TDX 站間行駛時間推算）":e?"（每站 2 分鐘預估）":""}
+  function estNote(e){return e==="tdx"?"（依 TDX 站間行駛時間推算）":e==="user"?"（依 TDX 站間行駛時間與你提供的時間推算）":e?"（部分路段以每站 2 分鐘預估）":""}
   // which departures really reach the next timetable station (each arrival row matched to its closest departure)
   function markReach(deps,arrs,lg){
     deps.forEach(function(x){x.reach=false});
