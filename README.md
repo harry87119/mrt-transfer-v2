@@ -16,8 +16,10 @@
 | 路線、時刻表、進站訊號、轉乘時間、站間行駛時間、班距、首末班車、營運通阻 | 資料介接「交通部TDX平臺」 | [政府資料開放授權條款－第1版](https://data.gov.tw/license)，須顯名 | 推算到站與轉乘 |
 | 政府行政機關辦公日曆表 | 行政院人事行政總處（[data.gov.tw 資料集 14718](https://data.gov.tw/dataset/14718)） | 政府資料開放授權條款－第1版，須顯名 | 自動判斷國定假日用假日班表 |
 | 機場捷運各站時刻表的車種（直達／普通等） | [桃園大眾捷運股份有限公司官網時刻表](https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/timetable.php) | 網站內容版權屬桃園大眾捷運股份有限公司 | 只擷取每班車的發車時間與車種，用來判斷是否停靠 |
-| 部分站的轉乘步行時間 | repo 作者本人實測 | — | 標示為「你實測」 |
+| 部分路段的站間行駛時間（TDX 缺資料的路段） | repo 作者提供 | — | 標示為「你提供」 |
+| 使用者自己的實測轉乘時間 | 使用者自行匯入 | — | 只存在使用者自己的瀏覽器，不在本 repo；標示為「你實測」 |
 | 其餘轉乘步行時間、下車與停站秒數 | 作者預估 | — | 畫面一律標示「預估」 |
+| 字型：思源宋體 Noto Serif TC（只保留本站用到的字） | [Google／Adobe Noto CJK](https://github.com/notofonts/noto-cjk) | [SIL Open Font License 1.1](fonts/OFL.txt) | 網頁內文字型，放在 `fonts/`，不向外部字型服務載入 |
 
 關於機場捷運官網資料：
 - 依該網站 robots.txt，`/tymetro-new/tw/_pages/` 允許存取。
