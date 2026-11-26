@@ -1323,15 +1323,16 @@ a{color:var(--focus)}
   seg("pace","pace",render);
   seg("dayType","dayType",function(){refreshView()});
 
-  if(creds){$("cid").value=creds.id}
+  function secretHint(){$("csec").placeholder=creds?"已儲存（為了安全不顯示）":""}
+  if(creds){$("cid").value=creds.id}secretHint();
   $("keyForm").addEventListener("submit",function(e){
     e.preventDefault();
     var id=$("cid").value.trim(),sec=$("csec").value.trim();
     if(!id||!sec){setStatus("err","請填入 Client Id 和 Client Secret。");return}
-    creds={id:id,secret:sec};lsSet("mrt-tdx-creds",creds);lsSet("mrt-tdx-token",null);$("csec").value="";
+    creds={id:id,secret:sec};lsSet("mrt-tdx-creds",creds);lsSet("mrt-tdx-token",null);$("csec").value="";secretHint();
     $("keyPanel").open=false;refreshView();
   });
-  $("keyClear").onclick=function(){creds=null;R.ready=false;lsSet("mrt-tdx-creds",null);lsSet("mrt-tdx-token",null);$("cid").value="";$("csec").value="";st.tt=null;st.mode="manual";render();setStatus("","已清除金鑰，目前是手動模式。")};
+  $("keyClear").onclick=function(){creds=null;R.ready=false;lsSet("mrt-tdx-creds",null);lsSet("mrt-tdx-token",null);$("cid").value="";$("csec").value="";secretHint();st.tt=null;st.mode="manual";render();setStatus("","已清除金鑰，目前是手動模式。")};
 
   if(!creds)$("keyPanel").open=false;
   refreshView();
