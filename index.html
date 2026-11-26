@@ -481,7 +481,7 @@ a{color:var(--focus)}
     lsSet("mrt-tdx-token",{tok:j.access_token,exp:now()+(j.expires_in||3600)*1000});
     return j.access_token;
   }
-  var lastCall=0,coolUntil=0;
+  var lastCall=0,coolUntil=0,fail429=0,stop429=false;
   function sleep(ms){return new Promise(function(r){setTimeout(r,ms)})}
   // FIFO queue: concurrent callers wait their turn, at most one TDX call every 600 ms
   var gateQ=Promise.resolve(),GAP=1000;
@@ -511,7 +511,11 @@ a{color:var(--focus)}
       await gate();countCall();r=await tfetch(TDX+"/api/basic"+path,{headers:{Authorization:"Bearer "+tk,Accept:"application/json"}});
     }
     busyNote(false);
-    if(r.status===429){coolUntil=now()+8e3;throw new Error("TDX 忙碌中，8 秒後自動再試。")}
+    if(r.status===429){
+      // after 3 rounds of refusals stop retrying: likely the monthly quota is used up, and retrying only wastes calls
+      if(++fail429>=3){stop429=true;coolUntil=now()+30*60e3;throw new Error("TDX 一直回覆「呼叫太多次」，已暫停自動重試 30 分鐘。可能是這組金鑰本月額度用完，可到 TDX 會員中心查看用量。")}
+      coolUntil=now()+8e3;throw new Error("TDX 忙碌中，8 秒後自動再試。")}
+    fail429=0;
     if(!r.ok)throw new Error("TDX 回應錯誤（"+r.status+"）。");
     return r.json();
   }
@@ -1088,7 +1092,7 @@ a{color:var(--focus)}
   function renderRoute(){
     var p=R.plan,v=$("verdict"),big=$("vBig"),why=$("vWhy");why.textContent="";
     renderWalk(p);
-    if(!R.ready||!p){$("rBoard").hidden=true;v.className="verdict";big.textContent=R.ready?"換一組起點和終點試試":!creds?"設定 TDX 金鑰後就能用":R.err?"時刻表沒讀完，稍後自動再試":"讀取時刻表中…";return}
+    if(!R.ready||!p){$("rBoard").hidden=true;v.className="verdict";big.textContent=R.ready?"換一組起點和終點試試":!creds?"設定 TDX 金鑰後就能用":R.err?(stop429?"TDX 暫時無法使用":"時刻表沒讀完，稍後自動再試"):"讀取時刻表中…";return}
     $("rBoard").hidden=false;
     var c=routeCalc();lastCalc=c;
     var oName=$("origin").value,dName=$("dest").value;
@@ -1242,7 +1246,7 @@ a{color:var(--focus)}
     if(!creds){R.ready=false;txt($("routeDesc"),"需要先在下面「TDX 金鑰設定」貼上金鑰才能用這個模式。");setStatus("","尚未設定 TDX 金鑰。");render();return}
     try{
       if(!TY)TY=await pre("tymc.json");if(!HOL)HOL=await pre("holidays.json");
-      if(!R.routes){setStatus("","讀取路線資料中…");R.routes=await loadRoutes();await loadTransfers();if(seq!==rSeq)return;indexRoutes()}
+      if(!R.routes){setStatus("","讀取路線資料中…");txt($("routeDesc"),"讀取路線資料中…");R.routes=await loadRoutes();await loadTransfers();if(seq!==rSeq)return;indexRoutes()}
       R.err=false;prefs.origin=$("origin").value;prefs.dest=$("dest").value;savePrefs();
       R.plan=plan(prefs.origin,prefs.dest);describePlan();R.shift={};R.live={o:[],t:[],t3:[]};
       if(!R.plan){R.ready=true;render();return}
@@ -1266,7 +1270,8 @@ a{color:var(--focus)}
       if(seq!==rSeq)return;
       R.loading=false;R.ready=false;R.err=true;render();
       setStatus("err",(e&&e.message&&/[一-鿿]/.test(e.message)?e.message:"連不上 TDX，可能是網路問題。"));
-      if(now()<coolUntil)setTimeout(function(){if(seq===rSeq)refreshRoute()},coolUntil-now()+500);
+      if(!R.routes)txt($("routeDesc"),"路線資料還沒讀到，站名選單會在讀到後出現。");
+      if(now()<coolUntil&&!stop429)setTimeout(function(){if(seq===rSeq)refreshRoute()},coolUntil-now()+500);
     }
   }
   async function refreshRouteLive(){
@@ -1359,7 +1364,7 @@ a{color:var(--focus)}
     e.preventDefault();
     var id=$("cid").value.trim(),sec=$("csec").value.trim();
     if(!id||!sec){setStatus("err","請填入 Client Id 和 Client Secret。");return}
-    creds={id:id,secret:sec};lsSet("mrt-tdx-creds",creds);lsSet("mrt-tdx-token",null);$("csec").value="";secretHint();
+    creds={id:id,secret:sec};lsSet("mrt-tdx-creds",creds);lsSet("mrt-tdx-token",null);fail429=0;stop429=false;coolUntil=0;$("csec").value="";secretHint();
     $("keyPanel").open=false;refreshView();
   });
   $("keyClear").onclick=function(){creds=null;R.ready=false;lsSet("mrt-tdx-creds",null);lsSet("mrt-tdx-token",null);$("cid").value="";$("csec").value="";secretHint();st.tt=null;st.mode="manual";render();setStatus("","已清除金鑰，目前是手動模式。")};
