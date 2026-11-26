@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Daily data refresh for the MRT transfer page (run by GitHub Actions).
+
+Writes into data/:
+  tymc.json      Taoyuan Metro official timetable (www.tymetro.com.tw), train type of every departure
+  holidays.json  Government office calendar (行政院人事行政總處, via data.gov.tw dataset 14718)
+  tdx/*.json, tt/*.json, fl/*.json   TDX static data, only when TDX_CLIENT_ID / TDX_CLIENT_SECRET are set
+  meta.json      when each part was refreshed
+Each part is independent: a failure keeps the previous file.
+"""
+import csv, io, json, os, re, sys, time, urllib.parse, urllib.request
+from datetime import datetime, timedelta, timezone
+
+TW = timezone(timedelta(hours=8))
+OUT = os.path.join(os.path.dirname(__file__), "..", "data")
+UA = {"User-Agent": "Mozilla/5.0 (compatible; daily-timetable-refresh)"}
+
+
+def get(url, headers=None, data=None, tries=4):
+    for k in range(tries):
+        try:
+            req = urllib.request.Request(url, data=data, headers={**UA, **(headers or {})})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except Exception as e:  # noqa: BLE001
+            code = getattr(e, "code", None)
+            print(f"  retry {k + 1} {url[:120]}: {e}", file=sys.stderr)
+            if code in (400, 401, 403, 404):
+                raise
+            time.sleep(3 * (k + 1))
+    raise RuntimeError("failed: " + url)
+
+
+def write(name, obj):
+    path = os.path.join(OUT, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
+
+
+def read(name, default):
+    try:
+        with open(os.path.join(OUT, name), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+# ---------- Taoyuan Metro official timetable ----------
+TY_STATIONS = ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12", "A13",
+               "A14a", "A15", "A16", "A17", "A18", "A19", "A20", "A21", "A22"]
+TY_URL = "https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/timetable-{}?date={}"
+CELL = re.compile(r'>(\d{2})點</div>\s*<span class="[^"]*\bdes(\d{2})\b[^"]*">\s*<i>(\d{2})</i>')
+
+
+def parse_ty(html):
+    html = html.split('class="nav timetable_list"')[0]  # the page repeats the tables for small screens
+    out = {}
+    for part in re.split(r"<table\b", html)[1:]:
+        m = re.search(r'summary="桃園捷運列車時刻表:([^"]*)"', part)
+        if not m or m.group(1).strip() in ("", "-"):
+            continue
+        head = m.group(1).strip()
+        trains = [[f"{h}:{mi}", t] for h, t, mi in CELL.findall(part)]
+        if trains:
+            out[head] = sorted(trains)
+    return out
+
+
+def update_tymc():
+    old = read("tymc.json", {"days": {}})
+    today = datetime.now(TW).date()
+    days = {}
+    for d in (today, today + timedelta(days=1)):
+        ds = d.isoformat()
+        day = {}
+        for sid in TY_STATIONS:
+            html = get(TY_URL.format(sid, ds)).decode("utf-8", "replace")
+            shown = re.search(r'id="timetable_date"[^>]*value="([\d-]+)"', html)
+            if shown and shown.group(1) != ds:
+                print(f"  {sid}: page shows {shown.group(1)} instead of {ds}, skipped", file=sys.stderr)
+                continue
+            tables = parse_ty(html)
+            if tables:
+                day[sid] = tables
+            time.sleep(0.8)
+        n = sum(len(v) for t in day.values() for v in t.values())
+        print(f"tymetro {ds}: {len(day)} stations, {n} departures")
+        if len(day) >= 20 and n > 1000:
+            days[ds] = day
+        elif ds in old.get("days", {}):
+            days[ds] = old["days"][ds]
+    if not days:
+        raise RuntimeError("tymetro: nothing parsed")
+    write("tymc.json", {"source": "桃園捷運公司官網時刻表", "url": "https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/timetable.php",
+                        "types": {"01": "直達車", "02": "尖峰增停直達車", "03": "普通車", "04": "增開往機場普通車", "05": "尖峰跳站普通車"},
+                        "days": days})
+
+
+# ---------- government office calendar ----------
+def update_holidays():
+    meta = json.loads(get("https://data.gov.tw/api/v2/rest/dataset/14718"))
+    year = datetime.now(TW).year
+    want = {f"{year - 1911}年": year, f"{year + 1 - 1911}年": year + 1}
+    out = {}
+    for res in meta["result"]["distribution"]:
+        desc = res.get("resourceDescription", "")
+        if res.get("resourceFormat") != "CSV" or "google" in desc.lower() or not any(desc.startswith(k) for k in want):
+            continue
+        raw = get(res["resourceDownloadUrl"])
+        for enc in ("utf-8-sig", "big5", "cp950"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        for row in csv.DictReader(io.StringIO(text)):
+            row = {k.strip(): (v or "").strip() for k, v in row.items() if k}
+            d, off = row.get("西元日期", ""), row.get("是否放假", "")
+            if re.fullmatch(r"\d{8}", d) and off in ("0", "2"):
+                out[d] = {"off": off == "2", "note": row.get("備註", "")}
+    if len(out) < 300:
+        raise RuntimeError(f"holidays: only {len(out)} days parsed")
+    print(f"holidays: {len(out)} days")
+    write("holidays.json", {"source": "行政院人事行政總處 政府行政機關辦公日曆表（data.gov.tw 14718）", "days": out})
+
+
+# ---------- TDX ----------
+TDX = "https://tdx.transportdata.tw"
+
+
+def tdx_token():
+    body = urllib.parse.urlencode({"grant_type": "client_credentials", "client_id": os.environ["TDX_CLIENT_ID"],
+                                   "client_secret": os.environ["TDX_CLIENT_SECRET"]}).encode()
+    r = get(TDX + "/auth/realms/TDXConnect/protocol/openid-connect/token", {"Content-Type": "application/x-www-form-urlencoded"}, body)
+    return json.loads(r)["access_token"]
+
+
+def update_tdx():
+    tok = tdx_token()
+
+    def api(path):
+        time.sleep(1.2)
+        return json.loads(get(TDX + "/api/basic" + path + ("&" if "?" in path else "?") + "$format=JSON",
+                              {"Authorization": "Bearer " + tok, "Accept": "application/json"}))
+
+    ops = ["TRTC", "NTMC", "TYMC"]
+    for name in ("StationOfRoute", "LineTransfer", "S2STravelTime", "Frequency"):
+        for op in ops:
+            try:
+                write(f"tdx/{name}-{op}.json", api(f"/v2/Rail/Metro/{name}/{op}"))
+            except Exception as e:  # noqa: BLE001
+                print(f"tdx {name}/{op}: {e}", file=sys.stderr)
+    try:
+        write("tdx/Line-NTMC.json", api("/v2/Rail/Metro/Line/NTMC"))
+    except Exception as e:  # noqa: BLE001
+        print(f"tdx Line/NTMC: {e}", file=sys.stderr)
+    for op in ops:
+        try:
+            write(f"fl/{op}.json", api(f"/v2/Rail/Metro/FirstLastTimetable/{op}"))
+        except Exception as e:  # noqa: BLE001
+            print(f"tdx FirstLast/{op}: {e}", file=sys.stderr)
+        try:
+            rows = api(f"/v2/Rail/Metro/StationTimeTable/{op}")
+            by = {}
+            for r in rows:
+                by.setdefault(r.get("StationID"), []).append(r)
+            for sid, rs in by.items():
+                if sid:
+                    write(f"tt/{sid}.json", rs)
+            print(f"tdx timetable {op}: {len(by)} stations")
+        except Exception as e:  # noqa: BLE001
+            print(f"tdx StationTimeTable/{op}: {e}", file=sys.stderr)
+
+
+def main():
+    meta = read("meta.json", {})
+    now = datetime.now(TW).isoformat(timespec="seconds")
+    jobs = [("tymc", update_tymc), ("holidays", update_holidays)]
+    if os.environ.get("TDX_CLIENT_ID") and os.environ.get("TDX_CLIENT_SECRET"):
+        jobs.append(("tdx", update_tdx))
+    else:
+        print("TDX secrets not set; skipping TDX part")
+    for key, fn in jobs:
+        try:
+            fn()
+            meta[key] = now
+        except Exception as e:  # noqa: BLE001
+            print(f"{key} FAILED: {e}", file=sys.stderr)
+    write("meta.json", meta)
+
+
+if __name__ == "__main__":
+    main()

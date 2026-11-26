@@ -1,0 +1,24 @@
+name: 每日更新資料
+on:
+  schedule:
+    - cron: "40 19 * * *"   # 03:40 台灣時間
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: update-data
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 抓資料
+        env:
+          TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
+          TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
+        run: python3 scripts/update_data.py
+      - name: 有變動就提交
+        run: |
+          git add data
+          if git diff --cached --quiet; then echo "沒有變動"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898099+github-actions[bot]@users.noreply.github.com" commit -q -m "每日更新資料"
+          git push
