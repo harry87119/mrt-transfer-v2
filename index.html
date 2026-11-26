@@ -636,7 +636,7 @@ a{color:var(--focus)}
   }
   // riding seconds from station a to b on `line`: TDX run times plus dwell at stations in between; else 2 min per station
   // segments TDX lacks, with times the user supplied (station names, seconds door-to-door)
-  var USER_SEG={"廣慈/奉天宮|象山":210};
+  var USER_SEG={"廣慈/奉天宮|象山":240};
   function userSeg(n1,n2){var v=USER_SEG[n1+"|"+n2];return v!=null?v:USER_SEG[n2+"|"+n1]}
   // riding seconds from station a to b on `line`: TDX run times plus dwell at stations in between;
   // a segment TDX lacks uses your supplied time, else 2 min. src: tdx / user / est (worst part wins)
