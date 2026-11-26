@@ -481,7 +481,7 @@ a{color:var(--focus)}
     lsSet("mrt-tdx-token",{tok:j.access_token,exp:now()+(j.expires_in||3600)*1000});
     return j.access_token;
   }
-  var lastCall=0,coolUntil=0,fail429=0,stop429=false;
+  var lastCall=0,coolUntil=0,fail429=0,stop429=false,lastRefusal="";
   function sleep(ms){return new Promise(function(r){setTimeout(r,ms)})}
   // FIFO queue: concurrent callers wait their turn, at most one TDX call every 600 ms
   var gateQ=Promise.resolve(),GAP=1000;
@@ -512,9 +512,12 @@ a{color:var(--focus)}
     }
     busyNote(false);
     if(r.status===429){
+      // show what TDX said and which API refused, so the cause can be told apart (rate vs quota)
+      var why="";try{why=(await r.text()).replace(/\s+/g," ").slice(0,120)}catch(e){}
+      lastRefusal=path.split("?")[0].replace(/^\/v2\/Rail\/Metro\//,"")+(why?"："+why:"");
       // after 3 rounds of refusals stop retrying: likely the monthly quota is used up, and retrying only wastes calls
-      if(++fail429>=3){stop429=true;coolUntil=now()+30*60e3;throw new Error("TDX 一直回覆「呼叫太多次」，已暫停自動重試 30 分鐘。可能是這組金鑰本月額度用完，可到 TDX 會員中心查看用量。")}
-      coolUntil=now()+8e3;throw new Error("TDX 忙碌中，8 秒後自動再試。")}
+      if(++fail429>=3){stop429=true;coolUntil=now()+30*60e3;throw new Error("TDX 一直回覆「呼叫太多次」，已暫停自動重試 30 分鐘。可能是這組金鑰本月額度用完，可到 TDX 會員中心查看用量。（"+lastRefusal+"）")}
+      coolUntil=now()+8e3;throw new Error("TDX 忙碌中，8 秒後自動再試。（"+lastRefusal+"）")}
     fail429=0;
     if(!r.ok)throw new Error("TDX 回應錯誤（"+r.status+"）。");
     return r.json();
