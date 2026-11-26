@@ -4,13 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0e1013">
-<!-- only this site, TDX and the font service may be reached: even injected code could not send the key elsewhere -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://tdx.transportdata.tw; connect-src 'self' https://tdx.transportdata.tw; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- only this site and TDX may be reached: even injected code could not send the key elsewhere -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://tdx.transportdata.tw; connect-src 'self' https://tdx.transportdata.tw; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>捷運轉乘來得及嗎</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Inter:wght@500;600&display=swap">
 <style>
+/* 思源宋體 Noto Serif TC (SIL OFL 1.1, fonts/OFL.txt), subset to the characters this site uses; others fall back to the system font */
+@font-face{font-family:"Noto Serif TC";font-weight:400;font-display:swap;src:url("fonts/noto-serif-tc-Regular.woff2") format("woff2")}
+@font-face{font-family:"Noto Serif TC";font-weight:500;font-display:swap;src:url("fonts/noto-serif-tc-Medium.woff2") format("woff2")}
+@font-face{font-family:"Noto Serif TC";font-weight:600 700;font-display:swap;src:url("fonts/noto-serif-tc-Bold.woff2") format("woff2")}
 /* Dark-only, low-saturation, minimal. One narrow column: pickers, board, verdict, controls */
 :root{
   --bg:#0e1013; --surface:#16191d; --surface-2:#1c2025; --fg:#e4e6e9; --muted:#8b929b; --faint:#5c636c; --line:#24282e;
@@ -18,8 +20,8 @@
   --ok:#86b398; --warn:#cdb77a; --bad:#cf8a8a;
   --ok-bg:rgba(134,179,152,.08); --warn-bg:rgba(205,183,122,.08); --bad-bg:rgba(207,138,138,.08);
   --focus:#8fb0d6;
-  --font-body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
-  --font-num:"Inter","Noto Sans TC",system-ui,sans-serif;
+  --font-body:"Noto Serif TC","Songti TC","PMingLiU",serif;
+  --font-num:ui-serif,"Noto Serif TC",serif;
   color-scheme:dark;
 }
 *{box-sizing:border-box}
