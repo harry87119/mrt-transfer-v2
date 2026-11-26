@@ -27,7 +27,8 @@ def get(url, headers=None, data=None, tries=4, opener=None):
             print(f"  retry {k + 1} {url[:120]}: {e}", file=sys.stderr)
             if code in (400, 401, 403, 404):
                 raise
-            time.sleep(3 * (k + 1))
+            # TDX answers 429 even at about one call a second, so back off much longer for it
+            time.sleep(15 * (k + 1) if code == 429 else 3 * (k + 1))
     raise RuntimeError("failed: " + url)
 
 
@@ -150,37 +151,46 @@ def update_tdx():
     tok = tdx_token()
 
     def api(path):
-        time.sleep(1.2)
+        time.sleep(3)
         return json.loads(get(TDX + "/api/basic" + path + ("&" if "?" in path else "?") + "$format=JSON",
-                              {"Authorization": "Bearer " + tok, "Accept": "application/json"}))
+                              {"Authorization": "Bearer " + tok, "Accept": "application/json"}, tries=5))
+
+    def save_timetable(op, rows):
+        by = {}
+        for r in rows:
+            by.setdefault(r.get("StationID"), []).append(r)
+        for sid, rs in by.items():
+            if sid:
+                write(f"tt/{sid}.json", rs)
+        print(f"tdx timetable {op}: {len(by)} stations")
 
     ops = ["TRTC", "NTMC", "TYMC"]
+    jobs = []
     for name in ("StationOfRoute", "LineTransfer", "S2STravelTime", "Frequency"):
         for op in ops:
-            try:
-                write(f"tdx/{name}-{op}.json", api(f"/v2/Rail/Metro/{name}/{op}"))
-            except Exception as e:  # noqa: BLE001
-                print(f"tdx {name}/{op}: {e}", file=sys.stderr)
-    try:
-        write("tdx/Line-NTMC.json", api("/v2/Rail/Metro/Line/NTMC"))
-    except Exception as e:  # noqa: BLE001
-        print(f"tdx Line/NTMC: {e}", file=sys.stderr)
+            jobs.append((f"{name}/{op}", f"/v2/Rail/Metro/{name}/{op}", lambda d, n=name, o=op: write(f"tdx/{n}-{o}.json", d)))
+    jobs.append(("Line/NTMC", "/v2/Rail/Metro/Line/NTMC", lambda d: write("tdx/Line-NTMC.json", d)))
     for op in ops:
-        try:
-            write(f"fl/{op}.json", api(f"/v2/Rail/Metro/FirstLastTimetable/{op}"))
-        except Exception as e:  # noqa: BLE001
-            print(f"tdx FirstLast/{op}: {e}", file=sys.stderr)
-        try:
-            rows = api(f"/v2/Rail/Metro/StationTimeTable/{op}")
-            by = {}
-            for r in rows:
-                by.setdefault(r.get("StationID"), []).append(r)
-            for sid, rs in by.items():
-                if sid:
-                    write(f"tt/{sid}.json", rs)
-            print(f"tdx timetable {op}: {len(by)} stations")
-        except Exception as e:  # noqa: BLE001
-            print(f"tdx StationTimeTable/{op}: {e}", file=sys.stderr)
+        jobs.append((f"FirstLast/{op}", f"/v2/Rail/Metro/FirstLastTimetable/{op}", lambda d, o=op: write(f"fl/{o}.json", d)))
+        jobs.append((f"StationTimeTable/{op}", f"/v2/Rail/Metro/StationTimeTable/{op}", lambda d, o=op: save_timetable(o, d)))
+
+    # one pass, then a second pass for whatever TDX refused; a failed file keeps the previous day's copy
+    for attempt in range(2):
+        failed = []
+        for label, path, done in jobs:
+            try:
+                done(api(path))
+            except Exception as e:  # noqa: BLE001
+                print(f"tdx {label}: {e}", file=sys.stderr)
+                failed.append((label, path, done))
+        if not failed:
+            break
+        jobs = failed
+        if attempt == 0:
+            print(f"tdx: {len(failed)} failed, retrying after a pause", file=sys.stderr)
+            time.sleep(90)
+    else:
+        print("tdx still failed: " + ", ".join(j[0] for j in jobs), file=sys.stderr)
 
 
 def main():
