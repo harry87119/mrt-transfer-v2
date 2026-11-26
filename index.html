@@ -1086,6 +1086,8 @@ a{color:var(--focus)}
   function fillRow(e,x,code,sub,tagTxt,tagCls){
     e.row.hidden=!x;if(!x)return;
     setDot(e.dot,code);e.d.textContent="往"+x.dest;e.live.hidden=!x.live;
+    // 機捷: show the official timetable departure time (what the TYMC app lists), not just the countdown
+    if(code==="A"&&x.sched&&!x.adhoc)sub="表定 "+clock(x.sched)+" 發車"+(sub?"\n"+sub:"");
     e.sm.textContent=sub;
     e.edge.hidden=!x.edge;if(x.edge)e.edge.textContent=x.edge;
     if(tagTxt){e.tag.hidden=false;e.tag.textContent=tagTxt;e.tag.className="tag "+tagCls}else e.tag.hidden=true;
