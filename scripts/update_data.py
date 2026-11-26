@@ -77,10 +77,11 @@ def update_tymc():
         # the site keeps the chosen date in a session cookie (set by POST station-timetable-date.php)
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         get(TY_BASE + "timetable-A1", opener=opener)
-        get(TY_BASE + "station-timetable-date.php", {"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest"},
-            urllib.parse.urlencode({"date": ds}).encode(), opener=opener)
         day = {}
         for sid in TY_STATIONS:
+            # the chosen date does not stick for long, so set it again before every station page
+            get(TY_BASE + "station-timetable-date.php", {"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest"},
+                urllib.parse.urlencode({"date": ds}).encode(), opener=opener)
             html = get(TY_BASE + "timetable-" + sid, opener=opener).decode("utf-8", "replace")
             shown = re.search(r'id="timetable_date"[^>]*value="([\d-]+)"', html)
             if not shown or shown.group(1) != ds:
