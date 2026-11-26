@@ -8,7 +8,7 @@ Writes into data/:
   meta.json      when each part was refreshed
 Each part is independent: a failure keeps the previous file.
 """
-import csv, io, json, os, re, sys, time, urllib.parse, urllib.request
+import csv, http.cookiejar, io, json, os, re, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
 TW = timezone(timedelta(hours=8))
@@ -16,11 +16,11 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "data")
 UA = {"User-Agent": "Mozilla/5.0 (compatible; daily-timetable-refresh)"}
 
 
-def get(url, headers=None, data=None, tries=4):
+def get(url, headers=None, data=None, tries=4, opener=None):
     for k in range(tries):
         try:
             req = urllib.request.Request(url, data=data, headers={**UA, **(headers or {})})
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with (opener.open(req, timeout=60) if opener else urllib.request.urlopen(req, timeout=60)) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001
             code = getattr(e, "code", None)
@@ -49,7 +49,8 @@ def read(name, default):
 # ---------- Taoyuan Metro official timetable ----------
 TY_STATIONS = ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12", "A13",
                "A14a", "A15", "A16", "A17", "A18", "A19", "A20", "A21", "A22"]
-TY_URL = "https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/timetable-{}?date={}"
+TY_BASE = "https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/"
+TY_DAYS = 3  # today and the next two days, so one missed run does not leave a gap
 CELL = re.compile(r'>(\d{2})點</div>\s*<span class="[^"]*\bdes(\d{2})\b[^"]*">\s*<i>(\d{2})</i>')
 
 
@@ -68,17 +69,23 @@ def parse_ty(html):
 
 
 def update_tymc():
-    old = read("tymc.json", {"days": {}})
+    old = read("tymc.json", {"days": {}}).get("days", {})
     today = datetime.now(TW).date()
     days = {}
-    for d in (today, today + timedelta(days=1)):
-        ds = d.isoformat()
+    for i in range(TY_DAYS):
+        ds = (today + timedelta(days=i)).isoformat()
+        # the site keeps the chosen date in a session cookie (set by POST station-timetable-date.php)
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        get(TY_BASE + "timetable-A1", opener=opener)
         day = {}
         for sid in TY_STATIONS:
-            html = get(TY_URL.format(sid, ds)).decode("utf-8", "replace")
+            # the chosen date does not stick for long, so set it again before every station page
+            get(TY_BASE + "station-timetable-date.php", {"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest"},
+                urllib.parse.urlencode({"date": ds}).encode(), opener=opener)
+            html = get(TY_BASE + "timetable-" + sid, opener=opener).decode("utf-8", "replace")
             shown = re.search(r'id="timetable_date"[^>]*value="([\d-]+)"', html)
-            if shown and shown.group(1) != ds:
-                print(f"  {sid}: page shows {shown.group(1)} instead of {ds}, skipped", file=sys.stderr)
+            if not shown or shown.group(1) != ds:
+                print(f"  {sid}: page shows {shown and shown.group(1)} instead of {ds}, skipped", file=sys.stderr)
                 continue
             tables = parse_ty(html)
             if tables:
@@ -88,13 +95,16 @@ def update_tymc():
         print(f"tymetro {ds}: {len(day)} stations, {n} departures")
         if len(day) >= 20 and n > 1000:
             days[ds] = day
-        elif ds in old.get("days", {}):
-            days[ds] = old["days"][ds]
-    if not days:
+    # keep earlier files' days that are still useful (yesterday onward) and were not refreshed now
+    keep_from = (today - timedelta(days=1)).isoformat()
+    for ds, day in old.items():
+        if ds >= keep_from and ds not in days:
+            days[ds] = day
+    if not any(ds >= today.isoformat() for ds in days):
         raise RuntimeError("tymetro: nothing parsed")
-    write("tymc.json", {"source": "桃園捷運公司官網時刻表", "url": "https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/timetable.php",
+    write("tymc.json", {"source": "桃園捷運公司官網時刻表", "url": TY_BASE + "timetable.php",
                         "types": {"01": "直達車", "02": "尖峰增停直達車", "03": "普通車", "04": "增開往機場普通車", "05": "尖峰跳站普通車"},
-                        "days": days})
+                        "days": dict(sorted(days.items()))})
 
 
 # ---------- government office calendar ----------
