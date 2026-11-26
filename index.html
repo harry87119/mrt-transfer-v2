@@ -204,7 +204,11 @@ a{color:var(--focus)}
 
   <details class="panel" id="personalPanel">
     <summary>個人設定</summary>
-    <p class="note">你的預設路線、各線預設站和實測轉乘時間只存在這支手機的瀏覽器，不在公開的程式碼裡。換手機時，用下面的按鈕複製設定連結，在新手機打開一次即可。</p>
+    <p class="note">你的預設路線、各線預設站和實測轉乘時間只存在這支手機的瀏覽器，不在公開的程式碼裡。換手機時，用下面的按鈕複製設定連結，在新手機打開一次即可。從主畫面圖示開啟時，資料跟 Safari 是分開存的，請把設定連結貼到下面匯入。</p>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="personalPaste" placeholder="貼上設定連結" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;width:auto">
+      <button type="button" class="btn ghost" id="personalImport">匯入</button>
+    </div>
     <div id="personalInfo" class="note"></div>
     <div class="row" style="display:flex;gap:8px;margin-top:10px">
       <button type="button" class="btn ghost" id="personalCopy">複製設定連結</button>
@@ -249,10 +253,15 @@ a{color:var(--focus)}
   function b64dec(t){t=t.replace(/-/g,"+").replace(/_/g,"/");while(t.length%4)t+="=";var bin=atob(t),u=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return new TextDecoder().decode(u)}
   function b64enc(str){var u=new TextEncoder().encode(str),bin="";u.forEach(function(c){bin+=String.fromCharCode(c)});return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
   var personalMsg="";
+  // accepts a whole link, "#p=…" or just the code; returns true when saved
+  function importPersonal(text){
+    var m=/(?:#p=)?([A-Za-z0-9_-]{8,})\s*$/.exec(String(text||"").trim());if(!m)return false;
+    try{var v=JSON.parse(b64dec(m[1]));if(!v||typeof v!=="object"||Array.isArray(v))return false;localStorage.setItem("mrt-personal",JSON.stringify(v));return true}
+    catch(e){return false}
+  }
   (function(){
     var m=/^#p=([A-Za-z0-9_-]+)$/.exec(location.hash||"");if(!m)return;
-    try{var v=JSON.parse(b64dec(m[1]));if(v&&typeof v==="object"){try{localStorage.setItem("mrt-personal",JSON.stringify(v))}catch(e){}personalMsg="已把個人設定存進這支手機。"}}
-    catch(e){personalMsg="個人設定連結格式不對，沒有存入。"}
+    personalMsg=importPersonal(m[1])?"已把個人設定存進這支手機。":"個人設定連結格式不對，沒有存入。";
     try{history.replaceState(null,"",location.pathname+location.search)}catch(e){location.hash=""}
   })();
   var PERSONAL=(function(){try{return JSON.parse(localStorage.getItem("mrt-personal")||"{}")||{}}catch(e){return {}}})();
@@ -1323,6 +1332,12 @@ a{color:var(--focus)}
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(link).then(done,function(){prompt("複製這個連結",link)});else prompt("複製這個連結",link);
   };
   $("personalClear").onclick=function(){if(!confirm("清除這支手機上的個人設定？"))return;try{localStorage.removeItem("mrt-personal")}catch(e){}location.reload()};
+  $("personalImport").onclick=function(){
+    var inp=$("personalPaste");
+    if(importPersonal(inp.value)){try{sessionStorage.setItem("mrt-personal-msg","1")}catch(e){}location.reload()}
+    else{$("personalInfo").textContent="這段不是有效的設定連結，請重新複製整段再貼上。"}
+  };
+  try{if(sessionStorage.getItem("mrt-personal-msg")){sessionStorage.removeItem("mrt-personal-msg");personalMsg="已匯入個人設定。"}}catch(e){}
   renderPersonal();
   if(personalMsg){$("personalPanel").open=true;$("personalInfo").textContent=personalMsg+" "+$("personalInfo").textContent}
   $("xferCheck").addEventListener("toggle",function(){if(this.open)runXferCheck()});
