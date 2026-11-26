@@ -184,6 +184,7 @@ a{color:var(--focus)}
 
   <details class="panel" id="keyPanel">
     <summary>TDX 金鑰設定</summary>
+    <p class="note" id="usageNote"></p>
     <ol>
       <li>到 tdx.transportdata.tw 免費註冊會員。</li>
       <li>在「會員中心 → 資料服務 → API 金鑰」取得 Client Id 與 Client Secret。</li>
@@ -486,15 +487,19 @@ a{color:var(--focus)}
   // fetch with a 15 s timeout so one stuck request never blocks the queue
   function tfetch(url,opt){var ac=typeof AbortController!=="undefined"?new AbortController():null,tm=ac&&setTimeout(function(){ac.abort()},15000);
     if(ac)opt.signal=ac.signal;return fetch(url,opt).then(function(r){clearTimeout(tm);return r},function(e){clearTimeout(tm);throw new Error("TDX 沒有回應，請稍後再試。")})}
+  // monthly TDX call counter for this phone (basic members get about 3,000 calls a month in total)
+  function usage(){var m=new Date(now()+8*3600e3).toISOString().slice(0,7),u=lsGet("mrt-usage",null);return u&&u.m===m?u:{m:m,n:0}}
+  function countCall(){var u=usage();u.n++;lsSet("mrt-usage",u);if(u.n%10===0)renderUsage()}
+  function renderUsage(){var el=$("usageNote");if(!el)return;var u=usage();el.textContent="這個月這支手機已呼叫 TDX 約 "+u.n+" 次。基礎會員每月約 3,000 次，多支裝置共用同一組金鑰會一起計算。"}
   async function api(path){
-    var tk=await token();await gate();
+    var tk=await token();await gate();countCall();
     var r=await tfetch(TDX+"/api/basic"+path,{headers:{Authorization:"Bearer "+tk,Accept:"application/json"}});
     if(r.status===401){lsSet("mrt-tdx-token",null);tk=await token();r=await tfetch(TDX+"/api/basic"+path,{headers:{Authorization:"Bearer "+tk}})}
     // 429: quietly back off (1.5s, 3s, 6s) and retry before giving up for a short cooldown
     for(var k=0;r.status===429&&k<3;k++){
       busyNote(true);
       var ra=+r.headers.get("Retry-After");await sleep(ra>0&&ra<20?ra*1000:1500*Math.pow(2,k));
-      await gate();r=await tfetch(TDX+"/api/basic"+path,{headers:{Authorization:"Bearer "+tk,Accept:"application/json"}});
+      await gate();countCall();r=await tfetch(TDX+"/api/basic"+path,{headers:{Authorization:"Bearer "+tk,Accept:"application/json"}});
     }
     busyNote(false);
     if(r.status===429){coolUntil=now()+8e3;throw new Error("TDX 忙碌中，8 秒後自動再試。")}
@@ -656,6 +661,57 @@ a{color:var(--focus)}
     });
     return out||{sec:h*120,src:"est"};
   }
+  // TDX Frequency: headway per line, used for the average platform wait when comparing routes
+  R.freq={};
+  async function loadFreq(op){
+    var ck="mrt-freq:"+op,c=lsGet(ck,null),rows;
+    if(c&&c.exp>now())rows=c.rows;
+    else{try{rows=(await preTdx("tdx/Frequency-"+op+".json"))||await api("/v2/Rail/Metro/Frequency/"+op+"?$format=JSON");rows=(rows||[]).map(function(r){return {L:r.LineID,sv:r.ServiceDay||r.ServiceDays||{},h:(r.Headways||[]).map(function(h){return [h.StartTime,h.EndTime,+h.MinHeadwayMins||0,+h.MaxHeadwayMins||0]})}});lsSet(ck,{exp:now()+7*86400e3,rows:rows})}catch(e){rows=[]}}
+    rows.forEach(function(r){if(r.L&&r.h.length)(R.freq[r.L]=R.freq[r.L]||[]).push(r)});
+  }
+  // headway range {min,max} in minutes for `line` right now, or null
+  function headway(line){
+    var sd=serviceDay(),sec=twNow().sec;if(sec<4*3600)sec+=86400;var out=null;
+    (R.freq[line]||[]).forEach(function(r){
+      if(Object.keys(r.sv).length&&!r.sv[DOWKEY[sd.dow]])return;
+      r.h.forEach(function(h){var a=hm(h[0]),b=hm(h[1]);if(a==null||b==null||!h[3])return;if(b<=a)b+=86400;if(sec>=a&&sec<b&&!out)out={min:h[2]||h[3],max:h[3]}});
+    });
+    return out;
+  }
+  function avgWait(line){var h=headway(line);return h?(h.min+h.max)/2*30:AVG_WAIT}
+  // TDX Alert: service disruptions, refreshed at most every 3 minutes
+  R.alerts={};var alertAt=0;
+  async function loadAlerts(ops){
+    if(now()-alertAt<600e3)return;alertAt=now();
+    for(var i=0;i<ops.length;i++){
+      try{
+        var r=await api("/v2/Rail/Metro/Alert/"+ops[i]+"?$format=JSON");
+        var list=Array.isArray(r)?r:(r&&(r.Alerts||r.alerts))||[];
+        R.alerts[ops[i]]=list.map(function(a){
+          var sc=a.Scope||{},ls=[];
+          (sc.Lines||[]).forEach(function(l){if(l.LineID)ls.push(l.LineID)});
+          (sc.Routes||[]).forEach(function(l){if(l.LineID)ls.push(l.LineID)});
+          (sc.Stations||[]).forEach(function(l){var L=l.LineID||lineOf(l.StationID);if(L)ls.push(L)});
+          var t=nm(a.Title&&(a.Title.Zh_tw||a.Title)||""),d=String(a.Description&&(a.Description.Zh_tw||a.Description)||"").trim();
+          return {lines:ls,title:t,desc:d,status:a.Status};
+        }).filter(function(a){return (a.title||a.desc)&&!/正常營運|營運正常/.test(a.title+a.desc)});
+      }catch(e){if(now()<coolUntil)return}
+    }
+  }
+  function alertsFor(lines){
+    var out=[];Object.keys(R.alerts).forEach(function(op){R.alerts[op].forEach(function(a){if(!a.lines.length||a.lines.some(function(L){return lines.indexOf(L)>=0}))out.push(a)})});
+    return out;
+  }
+  // TDX FirstLastTimetable for one station (cached for the day)
+  R.fl={};
+  async function loadFL(line,id){
+    var op=opOf(line),ck="mrt-fl:"+id,c=lsGet(ck,null);
+    if(c&&c.exp>now()){R.fl[id]=c.rows;return}
+    try{var all=await preTdx("fl/"+op+".json"),rows=all?all.filter(function(r){return r.StationID===id}):await api("/v2/Rail/Metro/FirstLastTimetable/"+op+q("StationID eq '"+id+"'"));
+      R.fl[id]=(rows||[]).map(function(r){return {dest:nm(r.DestinationStationName&&r.DestinationStationName.Zh_tw||""),first:r.FirstTrainTime,last:r.LastTrainTime,sv:r.ServiceDay||{}}});
+      lsSet(ck,{exp:now()+12*3600e3,rows:R.fl[id]})}catch(e){if(now()<coolUntil)throw e}
+  }
+  function flFor(id,validDest){return (R.fl[id]||[]).filter(function(r){return r.dest&&validDest(r.dest)})}
   function indexRoutes(){
     R.byName={};var perLine={};
     R.routes.forEach(function(r){
@@ -1296,8 +1352,24 @@ a{color:var(--focus)}
   if(!creds)$("keyPanel").open=false;
   refreshView();
   setInterval(render,1000);
-  liveTimer=setInterval(refreshLive,30000);
-  document.addEventListener("visibilitychange",function(){if(!document.hidden){render();refreshLive()}});
+  // live signal polling, sized to save quota: every 30 s when a train you need is within 4 minutes,
+  // otherwise every 2 minutes; pauses after 10 minutes without touching the page
+  var lastTouch=now(),lastLive=now(),livePaused=false;
+  function touched(){lastTouch=now();if(livePaused){livePaused=false;lastLive=0}}
+  ["click","touchstart","keydown"].forEach(function(ev){document.addEventListener(ev,touched,{passive:true})});
+  function nextNeeded(){
+    var c=lastCalc,t=now(),best=Infinity;if(!c||!c.o)return best;
+    var o0=c.o[0];[o0,o0&&o0.conn>=0&&c.c&&c.c[o0.conn]].forEach(function(x){if(x&&x.at>t-30e3)best=Math.min(best,x.at-t)});
+    return best;
+  }
+  liveTimer=setInterval(function(){
+    if(document.hidden||!R.ready)return;
+    if(now()-lastTouch>600e3){if(!livePaused){livePaused=true;setStatus("","已暫停自動更新進站訊號（節省 TDX 額度），點一下畫面或按重新整理就會繼續。")}return}
+    var gap=nextNeeded()<=240e3?30e3:120e3;
+    if(now()-lastLive>=gap){lastLive=now();refreshLive()}
+  },5000);
+  document.addEventListener("visibilitychange",function(){if(!document.hidden){touched();render();lastLive=now();refreshLive()}});
+  renderUsage();
 })();
 </script>
 </body>
