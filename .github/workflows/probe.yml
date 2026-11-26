@@ -1,0 +1,20 @@
+name: probe
+on:
+  push:
+    branches: [probe-date]
+permissions:
+  contents: read
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSL -A "Mozilla/5.0" "https://www.tymetro.com.tw/tymetro-new/tw/_pages/travel-guide/timetable-A1" -o p.html
+          python3 - <<'PY'
+          s=open('p.html',encoding='utf-8').read()
+          i=s.find('timetable_date');print(s[max(0,i-2500):i+1500])
+          import re
+          for m in re.finditer(r'<script[^>]*>([\s\S]*?)</script>',s):
+              t=m.group(1)
+              if 'date' in t and ('timetable' in t or 'ajax' in t or 'location' in t): print('---SCRIPT---');print(t[:3000])
+          PY
