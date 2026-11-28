@@ -383,16 +383,19 @@ a{color:var(--focus)}
     if(tt!=null)return String(tt)==="2";
     return /^機場第二航廈/.test(dest||"")?"guess":false;
   }
+  // does a TDX ServiceDay record apply today (auto: weekday / weekend / national holiday; or the manual choice)
+  function svApplies(sv){
+    var sd=serviceDay();
+    if(st.dayType==="auto"){var hd=holidayToday();return hd&&hd.off&&sd.dow>0&&sd.dow<6?(sv.NationalHolidays!=null?!!sv.NationalHolidays:!!sv.Sunday):!!sv[DOWKEY[sd.dow]]}
+    return st.dayType==="holiday"?!!(sv.Saturday||sv.Sunday||sv.NationalHolidays):!!(sv.Monday||sv.Tuesday||sv.Wednesday||sv.Thursday||sv.Friday);
+  }
   function buildGroups(rows,code){
     var sd=serviceDay(),useHoliday;
     if(st.dayType==="weekday")useHoliday=false;else if(st.dayType==="holiday")useHoliday=true;else useHoliday=(sd.dow===0||sd.dow===6);
     var byDir={};
     rows.forEach(function(r){
       var sv=r.ServiceDay||{};
-      var applies;
-      if(st.dayType==="auto"){var hd=holidayToday();applies=hd&&hd.off&&sd.dow>0&&sd.dow<6?(sv.NationalHolidays!=null?!!sv.NationalHolidays:!!sv.Sunday):!!sv[DOWKEY[sd.dow]]}
-      else applies=useHoliday?!!(sv.Saturday||sv.Sunday||sv.NationalHolidays):!!(sv.Monday||sv.Tuesday||sv.Wednesday||sv.Thursday||sv.Friday);
-      if(!applies)return;
+      if(!svApplies(sv))return;
       var dest=nm(r.DestinationStationName&&r.DestinationStationName.Zh_tw);
       if(!dest)return;
       var dir=(r.Direction!=null?r.Direction:0)+"-"+dest;
@@ -691,15 +694,21 @@ a{color:var(--focus)}
     rows.forEach(function(r){if(r.L&&r.h.length)(R.freq[r.L]=R.freq[r.L]||[]).push(r)});
   }
   // headway range {min,max} in minutes for `line` right now, or null
-  function headway(line){
-    var sd=serviceDay(),sec=twNow().sec;if(sec<4*3600)sec+=86400;var out=null;
+  function headway(line){return headwayAt(line,now())}
+  function headwayAt(line,ms){
+    var sec=Math.floor(((ms+8*3600e3)%86400e3)/1000);if(sec<4*3600)sec+=86400;var out=null;
     (R.freq[line]||[]).forEach(function(r){
-      if(Object.keys(r.sv).length&&!r.sv[DOWKEY[sd.dow]])return;
+      if(Object.keys(r.sv).length&&!svApplies(r.sv))return;
       r.h.forEach(function(h){var a=hm(h[0]),b=hm(h[1]);if(a==null||b==null||!h[3])return;if(b<=a)b+=86400;if(sec>=a&&sec<b&&!out)out={min:h[2]||h[3],max:h[3]}});
     });
     return out;
   }
   function avgWait(line){var h=headway(line);return h?(h.min+h.max)/2*30:AVG_WAIT}
+  // lines with no official timetable (文湖線) run on headways: wait is 0..max, on average (min+max)/4 minutes
+  function hwText(h){return h.min===h.max?String(h.min):h.min+"–"+h.max}
+  function hwAvgMs(h){return (h.min+h.max)*15e3}
+  // terminal of `line` in the direction from station a toward station b
+  function termToward(line,a,b){var out="";routesOf(line).some(function(r){var i=idx(r,a),j=idx(r,b);if(i<0||j<0||i===j)return false;out=(i<j?r.st[r.st.length-1]:r.st[0]).name;return true});return out}
   // TDX Alert: service disruptions, refreshed at most every 3 minutes
   R.alerts={};var alertAt=0;
   async function loadAlerts(ops){
@@ -1028,6 +1037,9 @@ a{color:var(--focus)}
     var oList=oAll.filter(function(x){return x.at>=t-20e3});
     var oLive=startsAt(p.lo,p.oId,toward)?[]:R.live.o.filter(function(dn){return validTerm(p.lo,p.oId,toward,dn)&&stopsAt({exp:isExpress(p.lo,{},{},dn)},toward)});
     oList=markEdges(withLive(oList,oLive,t).slice(0,3).map(function(x){var y=shifted(x,"o");y.adhoc=x.adhoc;return y}),oAll);
+    // origin line without a timetable: one stand-in train after the average headway wait (shown as headway, not a countdown)
+    var hwO=!oAll.length?headwayAt(p.lo,t):null;
+    if(hwO&&!oList.length){var vt=t+hwAvgMs(hwO);oList=[{at:vt,sched:vt,dest:termToward(p.lo,p.oId,toward),hwv:hwO,key:"hw"}]}
     res.o=oList;
     if(p.direct){
       oList.forEach(function(x){var a=arriveAt(x,res.dList,lg1);x.arr=a.at;x.arrEst=a.est});
@@ -1041,24 +1053,29 @@ a{color:var(--focus)}
     cList=markEdges(withLive(cList,cLive,t).slice(0,12).map(function(x){var y=shifted(x,"c");y.adhoc=x.adhoc;return y}),cAll);
     res.c=cList;
     // arrival of train x at the next station: match the same-destination train in that station's timetable
-    function link(x,arrTT,lg,walk,next,ck,ak,rk){
+    // next line without a timetable (hwLine): any train comes within its headway, marked -2 with the headway
+    function link(x,arrTT,lg,walk,next,ck,ak,rk,hwLine){
       var a=arriveAt(x,arrTT,lg);
       x[ak+"Est"]=a.est;
       x[ak]=a.at;
       x[rk]=x[ak]+ALIGHT*1000+walk*1000;
       x[ck]=-1;
       for(var i=0;i<next.length;i++){if(next[i].at+DWELL*1000-x[rk]>=0){x[ck]=i;break}}
+      if(x[ck]<0&&hwLine){var h=headwayAt(hwLine,x[rk]);if(h){x[ck]=-2;x[ck+"Hw"]=h}}
     }
+    var hwC=!cAll.length?p.ld:null;res.hwC=hwC&&headwayAt(p.ld,t);
     var w=walkSec();
-    oList.forEach(function(x){link(x,tf,lg1,w,cList,"conn","arr","ready")});
+    oList.forEach(function(x){link(x,tf,lg1,w,cList,"conn","arr","ready",hwC)});
     if(p.two){
       var c3All=filterA(X.lt,flat(R.tt.t3,X.lt).filter(function(x){return validTerm(X.lt,X.idT,X.dId,x.dest)}),res.dList,legSec(X.lt,X.idT,X.dId,X.h3),X.dId,res);
       var c3=c3All.filter(function(x){return x.at>=t-20e3});
       var c3Live=startsAt(X.lt,X.idT,X.dId)?[]:(R.live.t3||[]).filter(function(dn){return validTerm(X.lt,X.idT,X.dId,dn)&&stopsAt({exp:isExpress(X.lt,{},{},dn)},X.dId)});
       c3=markEdges(withLive(c3,c3Live,t).slice(0,12).map(function(x){var y=shifted(x,"c3");y.adhoc=x.adhoc;return y}),c3All);
       // look a little further down the second-leg list so the chain can be followed
-      var w2=walk2Sec();
-      cList.forEach(function(x){link(x,tf2,lg2,w2,c3,"conn2","arr2","ready2")});
+      var w2=walk2Sec(),hwC3=!c3All.length?X.lt:null;res.hwC3=hwC3&&headwayAt(X.lt,t);
+      cList.forEach(function(x){link(x,tf2,lg2,w2,c3,"conn2","arr2","ready2",hwC3)});
+      // middle line without a timetable: follow a stand-in train leaving after the average wait
+      oList.forEach(function(x){if(x.conn!==-2)return;var vt=x.ready+hwAvgMs(x.connHw);x.hwT={at:vt,sched:vt,dest:termToward(p.ld,p.tIdLd,p.dId),hwv:x.connHw};link(x.hwT,tf2,lg2,w2,c3,"conn2","arr2","ready2",hwC3)});
       res.c3=c3;
     }
     return res;
@@ -1096,6 +1113,7 @@ a{color:var(--focus)}
     e.sm.textContent=sub;
     e.edge.hidden=!x.edge;if(x.edge)e.edge.textContent=x.edge;
     if(tagTxt){e.tag.hidden=false;e.tag.textContent=tagTxt;e.tag.className="tag "+tagCls}else e.tag.hidden=true;
+    if(x.hwv){e.val.className="min";e.val.textContent=hwText(x.hwv);var u=document.createElement("span");u.className="u";u.textContent="分/班";e.val.appendChild(u);return}
     setMin(e.val,Math.max(0,(x.at-now())/1000));
   }
 
@@ -1117,10 +1135,12 @@ a{color:var(--focus)}
     for(var i=0;i<3;i++){
       var x=c.o[i],sub="",tg=null,cls="";
       if(x){
-        if(p.direct)sub=(x.arrEst?"約 ":"")+clock(x.arr)+" 到"+dName;
+        var hwPre=x.hwv?"沒有官方時刻表，以平均候車推算（預估）\n":"";
+        if(p.direct)sub=hwPre+(x.arrEst||x.hwv?"約 ":"")+clock(x.arr)+" 到"+dName;
         else{
-          sub="約 "+rel(x.arr)+"到"+t1In;
+          sub=hwPre+"約 "+rel(x.arr)+"到"+t1In;
           if(x.conn>=0){var cc=c.c[x.conn];sub+="\n接 "+rel(cc.at)+"那班"+(cc.edge==="末班車"?"（末班車）":"");var wt=waitTag(waitInfo((cc.at-x.ready)/1000));tg=wt.t;cls=wt.c}
+          else if(x.conn===-2){sub+="\n到月台後最多等 "+x.connHw.max+" 分";tg="約每 "+hwText(x.connHw)+" 分一班";cls="tag-ok"}
           else{tg="接不到";cls="tag-bad"}
         }
       }
@@ -1139,22 +1159,23 @@ a{color:var(--focus)}
           else{
             s2=(y.live?"正在進站・":"")+"約 "+rel(y.arr2)+"到"+t2In;
             if(y.conn2>=0){var z=c.c3[y.conn2];s2+="\n接 "+rel(z.at)+"那班"+(z.edge==="末班車"?"（末班車）":"");var wz=waitTag(waitInfo((z.at-y.ready2)/1000));t2=wz.t;c2=wz.c}
+            else if(y.conn2===-2){s2+="\n到月台後最多等 "+y.conn2Hw.max+" 分";t2="約每 "+hwText(y.conn2Hw)+" 分一班";c2="tag-ok"}
             else{t2="接不到";c2="tag-bad"}
           }
         }
         fillRow(cEls[jj],y,p.ld,s2,t2,c2);
       }
-      emptyNote("tRows",!c.c[off2],"今天沒有接得上的班次");
+      emptyNote("tRows",!c.c[off2],c.hwC?hwNote(p.ld,c.hwC):"今天沒有接得上的班次");
     }
     // ---- second transfer station
     $("t3Sub").hidden=!p.two;$("t3Rows").hidden=!p.two;
     var land=-1;
     if(p.two){
       lineTitle($("t3Title"),stn(t2Out),p.x.lt);txt($("t3Xfer"),xferLabel(p.x.name,p.x.lf,p.x.idF,p.x.lt,p.x.idT,walk2Base(),w2));
-      land=mineIdx>=0?c.c[mineIdx].conn2:-1;
+      var ccM=mineIdx>=0?c.c[mineIdx]:mineIdx===-2?c.o[0].hwT:null;land=ccM?ccM.conn2:-1;
       var off3=land>=0?land:c.c3.length;
       for(var k3=0;k3<3;k3++){var z3=c.c3[k3+off3];fillRow(c3Els[k3],z3,p.x.lt,z3&&z3.live?"正在進站":"",k3===0&&land>=0?"下一班接這班":null,"tag-ok")}
-      emptyNote("t3Rows",!c.c3[off3],"今天沒有接得上的班次");
+      emptyNote("t3Rows",!c.c3[off3],c.hwC3?hwNote(p.x.lt,c.hwC3):"今天沒有接得上的班次");
     }
     // ---- verdict: short headline + fact lines
     function line(parts){var d=document.createElement("div");parts.forEach(function(pt){var n=document.createElement(pt[1]?"b":"span");n.textContent=pt[0];d.appendChild(n)});why.appendChild(d)}
@@ -1163,35 +1184,51 @@ a{color:var(--focus)}
     var o0=c.o[0],o1=c.o[1];
     if(!o0){
       var hw=headway(p.lo),fr=flFor(p.oId,function(dn){return validTerm(p.lo,p.oId,p.direct?p.dId:p.tIdLo,dn)})[0];
+      if(!(R.tt.o||[]).length&&R.freq[p.lo])return bad(LINES[p.lo].name+"現在不在營運時間",[["依 TDX 班距資料，"+LINES[p.lo].name+"沒有官方時刻表，目前時段沒有列車。"]]);
       if(!(R.tt.o||[]).length)return bad("讀不到"+oName+"的時刻表",hw?[["TDX 班距：這段時間約每 "],[hw.min===hw.max?hw.min+"":hw.min+"–"+hw.max,1],[" 分鐘一班。"]]:null);
       return bad(oName+"往這個方向今天已經沒車了",fr&&fr.first?[["首班車 "],[String(fr.first).slice(0,5),1],["（TDX 首末班時刻）"]]:null);
     }
-    var when=o0.live||o0.at-now()<=20e3?"正在進站":" "+rel(o0.at);
+    var when=o0.hwv?"最近一班":o0.live||o0.at-now()<=20e3?"正在進站":" "+rel(o0.at);
+    // lead: the parts that start the line (where / when you get there)
+    function hwLine(L,h,lead){line(lead.concat([[LINES[L].name+"沒有官方時刻表，依 TDX 班距約每 "],[hwText(h),1],[" 分一班，最多等 "+h.max+" 分（以平均等 "+fmt(hwAvgMs(h)/1000)+" 推算，預估）"]]))}
+    if(o0.hwv)hwLine(p.lo,o0.hwv,[[oName+"："]]);
     if(p.direct){
       v.className="verdict ok";big.textContent="直達，搭"+when+"往"+o0.dest+"的車就好";
-      line([["預計 "],[clock(o0.arr),1],[" 到"+dName+estNote(o0.arrEst)]]);
+      line([["預計 "],[clock(o0.arr),1],[(o0.hwv?" 前後到":" 到")+dName+estNote(o0.arrEst)]]);
       if(o0.edge==="末班車")line([["這是今天"+oName+"這個方向的末班車。"]]);
       if(c.expGuess)line([["機捷直達車是依終點站預估判斷。"]]);
       return;
     }
-    if(o0.conn<0)return bad("搭"+when+"的車也接不到",[["你約 "],[rel(o0.ready),1],["才走到"+t1Out+"的月台，之後今天沒有車了。"]]);
-    var cc=c.c[o0.conn],wa=waitInfo((cc.at-o0.ready)/1000);
-    var lastTrain=cc,wb=null;
+    if(o0.conn===-1)return bad("搭"+when+"的車也接不到",[["你約 "],[rel(o0.ready),1],["才走到"+t1Out+"的月台，之後今天沒有車了。"]]);
+    var hwMid=o0.conn===-2,cc=hwMid?o0.hwT:c.c[o0.conn],wa=hwMid?{v:"ok"}:waitInfo((cc.at-o0.ready)/1000);
+    // one transfer onto a line without a timetable: you take whatever comes, so only the arrival estimate is shown
+    if(hwMid&&!p.two){
+      v.className="verdict ok";big.textContent="搭"+when+"往"+o0.dest+"的車，到"+t1Out+"轉"+LINES[p.ld].name;
+      hwLine(p.ld,o0.connHw,[[t1In+"：約 "],[rel(o0.arr),1],["到，"]]);
+      var e1=hwEta(p.ld,p.tIdLd,p.dId,p.h2,o0.ready,o0.connHw);
+      line([["預計 "],[clock(e1.at),1],[" 前後到"+dName+"，最晚約 "],[clock(e1.late),1],[estNote(e1.src)]]);
+      if(o0.edge==="末班車")line([["你搭的是今天"+oName+"這個方向的末班車。"]]);
+      return;
+    }
+    var lastTrain=cc,wb=null,hwEnd=null;
     if(p.two){
-      if(cc.conn2<0)return bad("第二次轉乘在"+t2Out+"接不到",[["你約 "],[rel(cc.ready2),1],["才走到"+t2Out+"的月台，之後今天沒有車了。"]]);
-      lastTrain=c.c3[cc.conn2];wb=waitInfo((lastTrain.at-cc.ready2)/1000);
+      if(!cc||cc.conn2===-1)return bad("第二次轉乘在"+t2Out+"接不到",[["你約 "],[rel((cc||o0).ready2||o0.ready),1],["才走到"+t2Out+"的月台，之後今天沒有車了。"]]);
+      if(cc.conn2===-2){hwEnd=cc.conn2Hw;lastTrain=null;wb={v:"ok"}}
+      else{lastTrain=c.c3[cc.conn2];wb=waitInfo((lastTrain.at-cc.ready2)/1000)}
     }
     var same=!p.two&&o1&&o1.conn===o0.conn,w1=same?waitInfo((cc.at-o1.ready)/1000):null;
     var rank={bad:0,warn:1,ok:2},worst=wb&&rank[wb.v]<rank[wa.v]?wb.v:wa.v;
     if(same&&w1.v!=="bad"){v.className="verdict "+w1.v;big.textContent="不用趕，搭 "+rel(o1.at)+"的下一班也接得上"}
     else{v.className="verdict "+worst;big.textContent="搭"+when+"往"+o0.dest+"的車"+(p.two?"，轉兩次":"，接 "+rel(cc.at)+"往"+cc.dest)}
-    line([[t1In+"：約 "],[rel(o0.arr),1],["到，轉乘後月台"],[wa.text.replace(/^等 /,"等 "),1],["，接 "+rel(cc.at)+"往"+cc.dest]]);
-    if(p.two)line([[t2In+"：約 "],[rel(cc.arr2),1],["到，轉乘後月台"],[wb.text,1],["，接 "+rel(lastTrain.at)+"往"+lastTrain.dest]]);
+    if(hwMid)hwLine(p.ld,o0.connHw,[[t1In+"：約 "],[rel(o0.arr),1],["到，搭最近一班往"+cc.dest+"。"]]);
+    else line([[t1In+"：約 "],[rel(o0.arr),1],["到，轉乘後月台"],[wa.text.replace(/^等 /,"等 "),1],["，接 "+rel(cc.at)+"往"+cc.dest]]);
+    if(p.two&&hwEnd)hwLine(p.x.lt,hwEnd,[[t2In+"：約 "],[rel(cc.arr2),1],["到，"]]);
+    else if(p.two)line([[t2In+"：約 "],[rel(cc.arr2),1],["到，轉乘後月台"],[wb.text,1],["，接 "+rel(lastTrain.at)+"往"+lastTrain.dest]]);
     if(same)line([["搭下一班（"+rel(o1.at)+"）也接得上同一班，月台"],[w1.text,1]]);
     else if(!p.two&&o1&&o1.conn>=0)line([["錯過的話，下一班接 "+rel(c.c[o1.conn].at)+"那班"]]);
-    var fin=arriveAt(lastTrain,c.dList,legSec(fl.line,fl.from,fl.to,fl.h));
-    line([["預計 "],[clock(fin.at),1],[" 到"+dName+estNote(fin.est)]]);
-    if(lastTrain.edge==="末班車")line([["要轉的是今天往"+lastTrain.dest+"的末班車。"]]);
+    if(hwEnd){var e2=hwEta(p.x.lt,p.x.idT,p.x.dId,p.x.h3,cc.ready2,hwEnd);line([["預計 "],[clock(e2.at),1],[" 前後到"+dName+"，最晚約 "],[clock(e2.late),1],[estNote(e2.src)]])}
+    else{var fin=arriveAt(lastTrain,c.dList,legSec(fl.line,fl.from,fl.to,fl.h));line([["預計 "],[clock(fin.at),1],[(hwMid||o0.hwv?" 前後到":" 到")+dName+estNote(fin.est)]])}
+    if(lastTrain&&lastTrain.edge==="末班車")line([["要轉的是今天往"+lastTrain.dest+"的末班車。"]]);
     if(o0.edge==="末班車")line([["你搭的是今天"+oName+"這個方向的末班車。"]]);
     if(c.expGuess)line([["機捷直達車是依終點站預估判斷，下一站時刻表讀到後會改用時刻表確認。"]]);
     if(worst==="bad")line([["時刻表只到分鐘，實際可能差 30 秒以上，下車要快走。"]]);
@@ -1202,6 +1239,9 @@ a{color:var(--focus)}
     al.slice(0,3).forEach(function(a){var d=document.createElement("div");var b=document.createElement("b");b.textContent="營運通知（TDX）";d.appendChild(b);d.appendChild(document.createTextNode(" "+(a.title||"")+(a.desc&&a.desc!==a.title?"："+a.desc:"")));box.appendChild(d)});
     if(al.length){var n=document.createElement("div");n.className="note";n.textContent="有異常時列車可能不照時刻表，下面的推算僅供參考。";box.appendChild(n)}
   }
+  // arrival on a headway-only last leg: average wait (and worst case: the longest headway) plus the TDX run time
+  function hwEta(line,from,to,h,ready,hw){var lg=legSec(line,from,to,h);return {at:ready+hwAvgMs(hw)+lg.sec*1000,late:ready+hw.max*60e3+lg.sec*1000,src:lg.src}}
+  function hwNote(L,h){return LINES[L].name+"沒有官方時刻表，依 TDX 班距現在約每 "+hwText(h)+" 分一班，到月台後最多等 "+h.max+" 分。"}
   function emptyNote(boxId,show,msg){
     var box=$(boxId),n=box.querySelector(".empty");
     if(!n){n=document.createElement("p");n.className="empty note";n.style.padding="10px 0";box.appendChild(n)}
